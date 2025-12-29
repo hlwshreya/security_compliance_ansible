@@ -1,0 +1,95 @@
+---
+- name: oscap-ssh Compliance Scan + Auto-Remediation (Semaphore)
+  hosts: "{{ target_hosts | default('all') }}"
+  gather_facts: yes
+  vars_files:
+    - /opt/openscap/vars/os_mapping.yml
+  
+  vars:
+    profile_short: "{{ profile_id | regex_replace('^xccdf_org\\.ssgproject\\.content_profile_', '') }}"
+    scan_timestamp: "{{ ansible_date_time.epoch }}"
+    scan_results_dir: "/opt/openscap/results/{{ scan_timestamp }}/{{ inventory_hostname }}/{{ profile_short }}/"
+  
+  tasks:
+    - name: Compute OS key
+      set_fact:
+        os_key: "{{ ansible_facts.distribution }} {{ ansible_facts.distribution_version.split('.')[0] }}"
+
+    - name: Set datastream path
+      set_fact:
+        scap_ds_file: "{{ datastream_mapping[os_key] | default('/dev/null') }}"
+
+    - name: Fail if unsupported OS
+      fail:
+        msg: "No datastream for {{ os_key }}. Edit /opt/openscap/vars/os_mapping.yml"
+      when: scap_ds_file == '/dev/null'
+
+    - name: List available profiles (discovery)
+      shell: oscap info {{ scap_ds_file }} | grep -o 'xccdf_org\.ssgproject\.content_profile_[^ ]*' | sort -u | head -10
+      register: available_profiles
+      delegate_to: localhost
+      run_once: true
+      changed_when: false
+
+    - name: Display scan information
+      debug:
+        msg:
+          - "🎯 SCAN START: {{ inventory_hostname }} ({{ os_key }})"
+          - "📄 Datastream: {{ scap_ds_file }}"
+          - "🎛️  Profile: {{ profile_id }} ({{ profile_short }})"
+          - "📋 Available profiles: {{ available_profiles.stdout_lines | default([]) | first(5) }}..."
+
+    - name: Create timestamped results directory
+      file:
+        path: "{{ scan_results_dir }}"
+        state: directory
+        mode: '0755'
+      delegate_to: localhost
+
+    - name: Run oscap-ssh scan
+      shell: |
+        oscap-ssh {{ ansible_user }}@{{ inventory_hostname }} {{ ansible_port | default(22) }} \
+          {{ oscap_ssh_args | default('-o StrictHostKeyChecking=no') }} \
+          xccdf eval \
+          --profile {{ profile_id }} \
+          --results-arf /tmp/{{ inventory_hostname }}-arf.xml \
+          --report /tmp/{{ inventory_hostname }}-report.html \
+          {{ scap_ds_file }}
+      register: scan_result
+      changed_when: false
+
+    - name: Fetch ARF and HTML results
+      fetch:
+        src: "/tmp/{{ inventory_hostname }}-{{ item }}"
+        dest: "{{ scan_results_dir }}{{ inventory_hostname }}-{{ item }}"
+        flat: yes
+      loop: [arf.xml, report.html]
+
+    - name: Generate Ansible remediation (FAILED RULES ONLY)
+      shell: |
+        oscap xccdf generate fix \
+          --fix-type ansible \
+          --results "{{ inventory_hostname }}-arf.xml" \
+          {{ scap_ds_file }} \
+          > "{{ inventory_hostname }}-{{ profile_short }}-failed.yml"
+      args:
+        chdir: "{{ scan_results_dir }}"
+      delegate_to: localhost
+      register: remediation_gen
+      changed_when: false
+
+    - name: Create remediation symlink
+      file:
+        src: "{{ scan_results_dir }}{{ inventory_hostname }}-{{ profile_short }}-failed.yml"
+        dest: "/opt/openscap/remediation/{{ inventory_hostname }}_{{ profile_short }}_failed.yml"
+        state: link
+      delegate_to: localhost
+
+    - name: FINAL SUMMARY (Copy for Semaphore)
+      debug:
+        msg:
+          - "✅ SCAN COMPLETE: {{ inventory_hostname }}"
+          - "📁 Results: {{ scan_results_dir }}"
+          - "📊 HTML: {{ scan_results_dir }}{{ inventory_hostname }}-report.html"
+          - "🔧 Remediation: /opt/openscap/remediation/{{ inventory_hostname }}_{{ profile_short }}_failed.yml"
+          - "🚀 Use 'Failed Rules Remediation' template to execute"

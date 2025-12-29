@@ -1,0 +1,43 @@
+---
+- name: Semaphore Failed Rules Remediation Runner
+  hosts: "{{ target_hosts }}"
+  gather_facts: no
+  vars:
+    remediation_path: "/opt/openscap/remediation/{{ remediation_file }}"
+  
+  tasks:
+    - name: Verify remediation file exists
+      stat:
+        path: "{{ remediation_path }}"
+      delegate_to: localhost
+      register: rem_file
+
+    - name: FAIL if remediation missing
+      fail:
+        msg: "❌ Remediation not found: {{ remediation_path }}. Run SCAN first!"
+      when: not rem_file.stat.exists
+
+    - name: DRY RUN - Preview remediation
+      block:
+        - name: Show playbook preview
+          slurp:
+            src: "{{ remediation_path }}"
+          register: playbook_content
+          
+        - debug:
+            msg:
+              - "🔍 DRY RUN: {{ remediation_path }} ({{ rem_file.stat.size | humanize }})"
+              - "📋 Tasks found: {{ (playbook_content.content | b64decode | regex_findall('name:.*') | length }} "
+              - "💾 File saved - APPROVE to execute"
+      when: dry_run | bool
+
+    - name: EXECUTE Remediation (Production)
+      block:
+        - name: Execute failed rules remediation
+          import_playbook: "{{ remediation_path }}"
+          
+        - debug:
+            msg:
+              - "✅ REMEDIATION COMPLETE: {{ remediation_file }}"
+              - "🔄 Re-run Compliance Scan to verify fixes"
+      when: not dry_run | bool
