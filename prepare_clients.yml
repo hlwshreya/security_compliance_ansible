@@ -1,0 +1,34 @@
+---
+- name: Install oscap-scanner on all clients
+  hosts: "{{ target_hosts | default('all') }}"
+  become: yes
+  gather_facts: yes
+  
+  tasks:
+    - name: RHEL/CentOS - Install openscap-scanner
+      yum:
+        name: openscap-scanner
+        state: present
+      when: "'RedHat' in ansible_distribution or 'CentOS' in ansible_distribution"
+
+    - name: Ubuntu/Debian - Install libopenscap8
+      apt:
+        name: libopenscap8
+        state: present
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+
+    - name: SUSE - Install openscap
+      zypper:
+        name: openscap
+        state: present
+      when: "'SUSE' in ansible_distribution"
+
+    - name: Verify oscap works
+      shell: oscap --version
+      register: oscap_version
+
+    - name: Summary
+      debug:
+        msg: 
+          - "✅ {{ inventory_hostname }}: oscap {{ oscap_version.stdout.split()[1] }}"
