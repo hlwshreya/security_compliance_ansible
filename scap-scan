@@ -17,3 +17,19 @@
   register: scan_result
   failed_when: scan_result.rc not in [0, 2]
   changed_when: false
+
+- name: Copy datastream to client
+  copy:
+    src: "{{ scap_ds_file }}"
+    dest: /tmp/ssg-ds.xml
+    mode: 0644
+
+- name: Run oscap DIRECTLY (as root)
+  shell: |
+    oscap xccdf eval \
+      --fetch-remote-resources \
+      --profile {{ profile_id }} \
+      --results-arf /tmp/{{ inventory_hostname }}-arf.xml \
+      --report /tmp/{{ inventory_hostname }}-report.html \
+      /tmp/ssg-ds.xml
+  become: yes  # Ansible handles sudo
